@@ -1,0 +1,674 @@
+/* App.css (drop-in replacement) */
+/* Theme: UPP Red (primary) + Soft Red (highlight), white background */
+
+:root {
+  /* Brand */
+  --primary: #d22d2d; /* main red */
+  --accent: #dc6969;  /* highlight red */
+
+  /* Base */
+  --bg: #ffffff;      /* page background stays white */
+  --card: #ffffff;
+  --border: #e6ebf2;
+  --text: #1f2937;
+  --muted: #6b7280;
+
+  --shadow: 0 6px 18px rgba(16, 24, 40, 0.06);
+  --shadow2: 0 2px 8px rgba(16, 24, 40, 0.06);
+
+  /* Brand tints */
+  --primary-06: rgba(210, 45, 45, 0.06);
+  --primary-08: rgba(210, 45, 45, 0.08);
+  --primary-12: rgba(210, 45, 45, 0.12);
+  --primary-16: rgba(210, 45, 45, 0.16);
+  --primary-22: rgba(210, 45, 45, 0.22);
+  --primary-28: rgba(210, 45, 45, 0.28);
+  --primary-35: rgba(210, 45, 45, 0.35);
+  --primary-45: rgba(210, 45, 45, 0.45);
+
+  /* Status */
+  --critical: #e5533d;
+  --warning: #f4b400;
+  --normal: #2fa36b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.appShell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Left-most slim rail */
+.rail {
+  width: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 10px;
+  background: var(--primary);
+}
+
+.railTop {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.railAvatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  letter-spacing: 0.4px;
+}
+
+.railNav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.railItem {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+  color: white;
+  background: rgba(255, 255, 255, 0.10);
+  transition: transform 0.06s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.railItem:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.railItem.active {
+  background: rgba(255, 255, 255, 0.28);
+  box-shadow: var(--shadow2);
+}
+
+/* Main */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* Top bar */
+.topbar {
+  height: 72px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.brandTitle {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.brandSubtitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.content {
+  padding: 18px;
+}
+
+/* Dashboard grid: left patient list + right detail */
+.dashGrid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+/* Left panel */
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow2);
+  overflow: hidden;
+}
+
+.panelHeader {
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panelTitle {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.searchWrap {
+  padding: 12px 14px 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.searchIcon {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.searchInput {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  outline: none;
+  background: #ffffff;
+}
+
+.searchInput:focus {
+  border-color: var(--primary-35);
+  box-shadow: 0 0 0 3px var(--primary-16);
+}
+
+.filterRow {
+  padding: 0 14px 12px;
+  display: flex;
+  gap: 10px;
+}
+
+.pill {
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.pill:hover {
+  background: #fbfcfe;
+}
+
+.pill.active {
+  color: var(--primary);
+  border-color: var(--primary-35);
+  background: var(--primary-08);
+}
+
+.patientList {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 72px - 18px - 18px - 220px);
+  overflow: auto;
+}
+
+.patientCard {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 12px;
+  cursor: pointer;
+  transition: transform 0.06s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+
+.patientCard:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow2);
+}
+
+.patientCard.selected {
+  border-color: var(--primary-45);
+  box-shadow: 0 0 0 3px var(--primary-12);
+}
+
+.patientCardTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.patientName {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.patientMeta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dotSep {
+  opacity: 0.6;
+}
+
+.patientMiniStats {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.miniStat {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+
+.miniLabel {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.miniValue {
+  font-size: 14px;
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.listFooter {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Status dots */
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+.statusDot.normal {
+  background: var(--normal);
+}
+.statusDot.warning {
+  background: var(--warning);
+}
+.statusDot.critical {
+  background: var(--critical);
+}
+
+/* Right detail panel */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detailHeader {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow2);
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.detailName {
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.detailSub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.primaryBtn {
+  border: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--primary);
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.06s ease, box-shadow 0.12s ease;
+}
+
+.primaryBtn:hover {
+  background: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow2);
+}
+
+/* Alert banner */
+.alertBanner {
+  border-radius: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.alertBanner.critical {
+  background: rgba(229, 83, 61, 0.08);
+  border-color: rgba(229, 83, 61, 0.25);
+}
+
+.alertBanner.warning {
+  background: rgba(244, 180, 0, 0.10);
+  border-color: rgba(244, 180, 0, 0.25);
+}
+
+.alertIcon {
+  font-size: 16px;
+}
+
+.alertText {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Metric cards row */
+.cardsRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metricCard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow2);
+  padding: 14px 16px;
+}
+
+.metricTitle {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.metricValue {
+  margin-top: 10px;
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+}
+
+.metricSuffix {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.metricSub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Trends placeholder */
+.trendCard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow2);
+  padding: 14px 16px 16px;
+}
+
+.trendHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.trendTitle {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.trendControls {
+  display: flex;
+  gap: 8px;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.chip:hover {
+  background: #fbfcfe;
+}
+
+.chip.active {
+  border-color: var(--primary-35);
+  background: var(--primary-08);
+  color: var(--primary);
+}
+
+/* Trends placeholder box */
+.trendPlaceholder {
+  margin-top: 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(31, 41, 55, 0.18);
+  background: #ffffff;
+  height: 260px;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+}
+
+.trendHint {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 520px;
+}
+
+/* Profile menu */
+.profileWrap {
+  position: relative;
+}
+
+.profileButton {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 16px;
+  padding: 8px 10px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  box-shadow: var(--shadow2);
+  transition: box-shadow 0.12s ease, transform 0.06s ease;
+}
+
+.profileButton:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
+}
+
+.profileMeta {
+  text-align: right;
+}
+
+.profileName {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.profileRole {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.profileCircle {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: var(--primary-12);
+  border: 1px solid var(--primary-22);
+  color: var(--primary);
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+}
+
+.profileMenu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: 220px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  z-index: 20;
+}
+
+.menuItem {
+  width: 100%;
+  text-align: left;
+  padding: 12px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.menuItem:hover {
+  background: var(--primary-06);
+}
+
+.menuItem.danger {
+  color: var(--critical);
+  font-weight: 800;
+}
+
+/* Stubs */
+.pageStub {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow2);
+  padding: 16px;
+}
+
+/* Empty state */
+.emptyState {
+  padding: 20px 10px;
+  text-align: center;
+}
+
+.emptyTitle {
+  font-weight: 800;
+}
+
+.emptySub {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .dashGrid {
+    grid-template-columns: 1fr;
+  }
+  .cardsRow {
+    grid-template-columns: 1fr;
+  }
+  .patientList {
+    max-height: 360px;
+  }
+}
+
+/* Mobile-like login inputs (red outline, rounded) */
+.btLoginInput {
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1.6px solid #d22d2d;
+  outline: none;
+  font-size: 16px;
+  background: #fff;
+}
+
+.btLoginInput:focus {
+  border-width: 2.2px;
+}
+
+.btLoginButton {
+  width: 100%;
+  padding: 14px 18px;
+  border-radius: 999px;
+  border: none;
+  color: #fff;
+  font-weight: 900;
+  letter-spacing: 0.9px;
+  cursor: pointer;
+}
+
+.btLoginButton:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
