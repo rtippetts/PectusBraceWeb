@@ -303,6 +303,12 @@ function suggestPassword() {
   return `${w}${n}${s}`;
 }
 
+function suggestSecretId() {
+  const w = WORDS[Math.floor(Math.random() * WORDS.length)].toLowerCase();
+  const n = Math.floor(Math.random() * 900) + 100;
+  return `${w}${n}`;
+}
+
 /* ========================= App Root ========================= */
 
 export default function App() {
@@ -338,31 +344,20 @@ export default function App() {
 function AuthedShell() {
   const location = useLocation();
   const navigate = useNavigate();
-
   const [rows, setRows] = useState<PatientRow[]>([]);
-  const [selectedId, setSelectedId] = useState<string>(""); // ✅ no default selection
-  const [railOpen, setRailOpen] = useState(true);
-
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<StatusFilter>("All");
-  const [sortMode, setSortMode] = useState<SortMode>("PRIORITY");
-
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [patientPaneCollapsed, setPatientPaneCollapsed] = useState(false);
+  const [listQuery, setListQuery] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<PatientRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PatientRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
   const [chartRange, setChartRange] = useState<ChartRange>("1M");
-
-  const onDashboard = location.pathname === "/" || location.pathname === "/dashboard";
-  const onManage = location.pathname === "/manage";
-  const showFab = onManage;
-
-  // Used to size main content next to fixed rail
-  const railWidth = onManage ? 0 : railOpen ? 360 : 72;
-
+  const onPatientPage = location.pathname === "/patient";
   async function loadPatients() {
     setLoading(true);
     setErr(null);
-
     try {
       type BasicPatient = {
         id: string;
@@ -371,68 +366,44 @@ function AuthedShell() {
         compliance_goal: number | null;
         created_at: string;
       };
-
-      // 1) Fetch patients from both sources and dedupe by id.
-      // This handles rows that are visible via RLS but missing provider_patients links.
       const [directRes, linkedRes] = await Promise.all([
         supabase
           .from("patients")
           .select("id, secret_id, brace_dispensed_at, compliance_goal, created_at")
           .order("created_at", { ascending: false }),
-        supabase.from("provider_patients").select(
-          `
-            patient:patients (
-              id,
-              secret_id,
-              brace_dispensed_at,
-              compliance_goal,
-              created_at
-            )
-          `
-        ),
+        supabase
+          .from("provider_patients")
+          .select("patient:patients(id,secret_id,brace_dispensed_at,compliance_goal,created_at)"),
       ]);
-
       if (directRes.error && linkedRes.error) {
         throw new Error(directRes.error.message || linkedRes.error.message);
       }
-
       const patientsById = new Map<string, BasicPatient>();
-
       if (!directRes.error) {
         for (const p of (directRes.data ?? []) as BasicPatient[]) patientsById.set(p.id, p);
       }
-
       if (!linkedRes.error) {
         const linkedPatients = (linkedRes.data ?? [])
           .map((r: any) => r?.patient)
           .filter(Boolean) as BasicPatient[];
         for (const p of linkedPatients) patientsById.set(p.id, p);
       }
-
       const patients = [...patientsById.values()];
-
       if (patients.length === 0) {
         setRows([]);
-        setSelectedId(""); // ✅ no selection
+        setSelectedId("");
         return;
       }
-
       const patientIds = patients.map((p) => p.id);
-
-      // 2) Fetch wear sessions
       const { data: sessions, error: sessErr } = await supabase
         .from("wear_sessions")
         .select("patient_id, start_time, end_time")
         .in("patient_id", patientIds);
-
       if (sessErr) throw new Error(sessErr.message);
-
-      // 3) Aggregate totals + last sync + per-day hours
       const nowMs = Date.now();
       const totalHoursByPatient = new Map<string, number>();
       const lastSyncByPatient = new Map<string, number>();
       const hoursByDayByPatient = new Map<string, Map<string, number>>();
-
       function getDayMap(pid: string) {
         const existing = hoursByDayByPatient.get(pid);
         if (existing) return existing;
@@ -440,66 +411,48 @@ function AuthedShell() {
         hoursByDayByPatient.set(pid, m);
         return m;
       }
-
       for (const s of (sessions ?? []) as any[]) {
         const pid = s.patient_id as string;
         const startMs = new Date(s.start_time).getTime();
         const endMs = s.end_time ? new Date(s.end_time).getTime() : nowMs;
-
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
-
         const hrs = (endMs - startMs) / 36e5;
         totalHoursByPatient.set(pid, (totalHoursByPatient.get(pid) ?? 0) + hrs);
-
         const candidateLast = s.end_time ? endMs : startMs;
         lastSyncByPatient.set(pid, Math.max(lastSyncByPatient.get(pid) ?? 0, candidateLast));
-
-        // per-day
         const dayMap = getDayMap(pid);
         addHoursByDay(dayMap, new Date(s.start_time), s.end_time ? new Date(s.end_time) : new Date());
       }
-
       const todayKey = toISODate(new Date());
       const y = new Date();
       y.setDate(y.getDate() - 1);
       const yKey = toISODate(y);
-
-      // 4) Build rows with insights
       const rowsBuilt: PatientRow[] = patients.map((p) => {
         const goal = p.compliance_goal ?? 16;
-
         const total = totalHoursByPatient.get(p.id) ?? 0;
         const last = lastSyncByPatient.get(p.id);
         const dayMap = hoursByDayByPatient.get(p.id) ?? new Map<string, number>();
-
         let compliantDays = 0;
         for (const hrs of dayMap.values()) if (hrs >= goal) compliantDays += 1;
-
         const todayHrs = dayMap.get(todayKey) ?? 0;
         const yHrs = dayMap.get(yKey) ?? 0;
         const avg7 = avg7FromMap(dayMap);
         const streak = streakFromMap(dayMap, goal);
-
         return {
           id: p.id,
           secret_id: p.secret_id,
           brace_dispensed_at: p.brace_dispensed_at,
           total_hours_worn: Math.round((total + Number.EPSILON) * 10) / 10,
-
           days_fully_compliant: compliantDays,
           streak_days: streak,
           today_hours: Math.round((todayHrs + Number.EPSILON) * 10) / 10,
           yesterday_hours: Math.round((yHrs + Number.EPSILON) * 10) / 10,
           avg7_hours: Math.round((avg7 + Number.EPSILON) * 10) / 10,
-
           last_sync_at: last ? new Date(last).toISOString() : null,
           compliance_goal: p.compliance_goal,
         };
       });
-
       setRows(rowsBuilt);
-      // ✅ DO NOT auto-select any patient
-      // keep whatever selectedId was (likely ""), unless it no longer exists
       setSelectedId((prev) => (prev && rowsBuilt.some((r) => r.id === prev) ? prev : ""));
     } catch (e: any) {
       setErr(e?.message ?? "Failed to load patients.");
@@ -507,395 +460,188 @@ function AuthedShell() {
       setLoading(false);
     }
   }
-
   async function updateGoal(patientId: string, newGoal: number) {
     const goal = Math.max(1, Math.min(24, Number(newGoal)));
-
-    // Optimistic UI update
     setRows((prev) => prev.map((p) => (p.id === patientId ? { ...p, compliance_goal: goal } : p)));
-
     try {
       const { error } = await supabase.from("patients").update({ compliance_goal: goal }).eq("id", patientId);
       if (error) throw error;
-
-      // Reload to recompute streak/compliance numbers
       await loadPatients();
     } catch (e: any) {
-      await loadPatients(); // revert UI
+      await loadPatients();
       throw new Error(e?.message ?? "Failed to update compliance goal.");
     }
   }
-
   useEffect(() => {
     loadPatients();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   const selected = useMemo(() => rows.find((r) => r.id === selectedId) ?? null, [rows, selectedId]);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-
-    const base = rows.filter((p) => {
-      const matchesQuery = !q || p.secret_id.toLowerCase().includes(q);
-      const status = statusFromPatient(p);
-      const matchesFilter =
-        filter === "All"
-          ? true
-          : filter === "Priority"
-            ? status === "Critical" || status === "Warning"
-            : status === filter;
-      return matchesQuery && matchesFilter;
-    });
-
-    const sorted = [...base].sort((a, b) => {
-      if (sortMode === "ALPHABETICAL") return a.secret_id.localeCompare(b.secret_id);
-
-      const rank = (s: "Critical" | "Warning" | "Normal") => (s === "Critical" ? 0 : s === "Warning" ? 1 : 2);
-      const ra = rank(statusFromPatient(a));
-      const rb = rank(statusFromPatient(b));
-      if (ra !== rb) return ra - rb;
-
-      const ta = a.last_sync_at ? new Date(a.last_sync_at).getTime() : 0;
-      const tb = b.last_sync_at ? new Date(b.last_sync_at).getTime() : 0;
-      if (ta !== tb) return ta - tb;
-
-      return a.secret_id.localeCompare(b.secret_id);
-    });
-
-    return sorted;
-  }, [rows, query, filter, sortMode]);
-
-  // ✅ Don’t auto-select first patient when filters change.
-  // Only clear selection if the selected patient disappears.
-  useEffect(() => {
-    if (selectedId && !filtered.some((p) => p.id === selectedId)) {
-      setSelectedId("");
-    }
-  }, [filtered, selectedId]);
-
+  const patientList = useMemo(() => {
+    const q = listQuery.trim().toLowerCase();
+    const base = rows.filter((p) => !q || p.secret_id.toLowerCase().includes(q));
+    return [...base].sort((a, b) => a.secret_id.localeCompare(b.secret_id));
+  }, [listQuery, rows]);
+  const routeTitle =
+    location.pathname === "/dashboard" || location.pathname === "/"
+      ? "Dashboard"
+      : location.pathname === "/patient"
+        ? selected?.secret_id ?? "Select patient from list"
+        : location.pathname === "/profile"
+            ? "Edit Profile"
+            : "Dashboard";
   return (
-    <div
-      className="appShell"
-      style={{
-        // We do our own fixed-rail layout so App.css grid doesn't fight us
-        display: "block",
-      }}
-    >
-      {/* Rail (hidden in manage view) */}
-      {!onManage && (
-        <aside
-          className="rail"
-          style={{
-            position: "fixed",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: railOpen ? 360 : 72,
-            background: PRIMARY,
-            transition: "width 0.18s ease",
-            overflow: "visible",
-            zIndex: 50,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {/* Toggle (always centered) */}
-          <button
-            type="button"
-            onClick={() => setRailOpen((v) => !v)}
-            aria-label={railOpen ? "Collapse patient rail" : "Expand patient rail"}
-            title={railOpen ? "Collapse patient rail" : "Expand patient rail"}
-            style={{
-              position: "absolute",
-              right: -14,
-              top: "50%",
-              transform: "translateY(-50%)",
-              width: 28,
-              height: 54,
-              borderRadius: 999,
-              border: "none",
-              background: PRIMARY,
-              color: "#fff",
-              display: "grid",
-              placeItems: "center",
-              boxShadow: "0 10px 24px rgba(16, 24, 40, 0.25)",
-              cursor: "pointer",
-              zIndex: 60,
-            }}
-          >
-            <IconChevron direction={railOpen ? "left" : "right"} />
-          </button>
-
-          {/* When collapsed, just show label */}
-          {!railOpen && (
-            <div style={{ paddingTop: 18, color: "rgba(255,255,255,0.9)", fontSize: 12, textAlign: "center" }}>
-              Patients
-            </div>
-          )}
-
-          {/* Expanded: patient list panel */}
-          {railOpen && (
-            <div style={{ padding: "12px 12px 14px", height: "100%", display: "flex", flexDirection: "column" }}>
-              <div
-                style={{
-                  background: "#fff",
-                  borderRadius: 18,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  boxShadow: "0 10px 26px rgba(16,24,40,0.18)",
-                  overflow: "hidden",
-                  display: "flex",
-                  flexDirection: "column",
-                  height: "100%",
-                }}
-              >
-                {/* Header */}
-                <div style={{ padding: 14, borderBottom: "1px solid #e6ebf2" }}>
-                  <div
-                    style={{
-                      fontWeight: 900,
-                      fontSize: 14,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
-                  >
-                    <span>Patients</span>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                    <button
-                      type="button"
-                      className={"chip" + (sortMode === "PRIORITY" ? " active" : "")}
-                      onClick={() => setSortMode("PRIORITY")}
-                      style={{ flex: 1 }}
-                    >
-                      Priority
-                    </button>
-                    <button
-                      type="button"
-                      className={"chip" + (sortMode === "ALPHABETICAL" ? " active" : "")}
-                      onClick={() => setSortMode("ALPHABETICAL")}
-                      style={{ flex: 1 }}
-                    >
-                      A–Z
-                    </button>
-                  </div>
-                </div>
-
-                {/* Search */}
-                <div className="searchWrap">
-                  <span className="searchIcon" style={{ color: "#64748b" }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" stroke="currentColor" strokeWidth="2" />
-                      <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                  </span>
-                  <input
-                    className="searchInput"
-                    placeholder="Search by Secret ID..."
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                </div>
-
-                {/* Filters */}
-                <div className="filterRow">
-                  <FilterPill active={filter === "All"} onClick={() => setFilter("All")}>
-                    All
-                  </FilterPill>
-                  <FilterPill active={filter === "Critical"} onClick={() => setFilter("Critical")}>
-                    Critical
-                  </FilterPill>
-                  <FilterPill active={filter === "Warning"} onClick={() => setFilter("Warning")}>
-                    Warning
-                  </FilterPill>
-                  <FilterPill active={filter === "Priority"} onClick={() => setFilter("Priority")}>
-                    Priority
-                  </FilterPill>
-                </div>
-
-                {/* Patient list (this scrolls; rail stays fixed) */}
-                <div
-                  className="patientList"
-                  style={{
-                    flex: 1,
-                    overflowY: "auto",
-                    // "shorter" feel: less padding/extra chrome; list takes the height
-                    paddingBottom: 10,
-                  }}
-                >
-                  {loading && <div style={{ padding: 12, color: "var(--muted)" }}>Loading…</div>}
-                  {err && <div style={{ padding: 12, color: "#E5533D" }}>{err}</div>}
-
-                  {!loading &&
-                    !err &&
-                    filtered.map((p) => {
-                      const status = statusFromPatient(p);
-                      const goal = p.compliance_goal ?? 16;
-
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className={"patientCard" + (p.id === selectedId ? " selected" : "")}
-                          onClick={() => {
-                            setSelectedId(p.id);
-                            if (!onDashboard) navigate("/dashboard");
-                          }}
-                        >
-                          <div className="patientCardTop">
-                            <div className="patientName">{p.secret_id}</div>
-                            <StatusDot status={status} />
-                          </div>
-
-                          <div
-                            className="patientMeta"
-                            style={{ display: "flex", justifyContent: "space-between", gap: 10 }}
-                          >
-                            <span>Last sync: {agoLabel(p.last_sync_at)}</span>
-                            <span style={{ fontWeight: 800, color: "#0f172a" }}>
-                              Today: {formatHours(p.today_hours)}/{goal}
-                            </span>
-                          </div>
-
-                          <div className="patientMiniStats" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-                            <div className="miniStat">
-                              <div className="miniLabel">7d avg</div>
-                              <div className="miniValue">{formatHours(p.avg7_hours)}</div>
-                            </div>
-                            <div className="miniStat">
-                              <div className="miniLabel">Streak</div>
-                              <div className="miniValue">{p.streak_days}</div>
-                            </div>
-                            <div className="miniStat">
-                              <div className="miniLabel">Compliant days</div>
-                              <div className="miniValue">{p.days_fully_compliant}</div>
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-
-                  {!loading && !err && filtered.length === 0 && (
-                    <div className="emptyState">
-                      <div className="emptyTitle">No matches</div>
-                      <div className="emptySub">Try a different search.</div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Footer: legend + refresh + manage patients button */}
-                <div className="listFooter" style={{ borderTop: "1px solid #eef2f7" }}>
-                  <Legend />
-                  <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                    <button className="chip" type="button" onClick={loadPatients} style={{ flex: 1 }}>
-                      Refresh
-                    </button>
-                  </div>
-
-                  {/* ✅ Wide "Manage patients" button (replaces old icon nav) */}
-                  <button
-                    type="button"
-                    onClick={() => navigate("/manage")}
-                    style={{
-                      marginTop: 10,
-                      width: "100%",
-                      borderRadius: 14,
-                      border: "none",
-                      background: PRIMARY,
-                      color: "#fff",
-                      fontWeight: 900,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 10,
-                      padding: "12px 12px",
-                      cursor: "pointer",
-                      boxShadow: "0 10px 22px rgba(16,24,40,0.16)",
-                    }}
-                  >
-                    <IconUsers />
-                    Manage patients
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>
-      )}
-
-      {/* Main area (offset by fixed rail width) */}
-      <div
-        className="main"
+    <div style={{ minHeight: "100vh", background: "#f6f8fc", display: "flex" }}>
+      <aside
         style={{
-          marginLeft: railWidth,
-          transition: "margin-left 0.18s ease",
-          minHeight: "100vh",
+          width: 92,
+          background: PRIMARY,
+          color: "#fff",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: "14px 0",
+          gap: 14,
+          boxShadow: "8px 0 24px rgba(15,23,42,0.12)",
+          position: "sticky",
+          top: 0,
+          height: "100vh",
+          zIndex: 20,
         }}
       >
-        <header className="topbar">
-          <div className="topbarLeft" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {onManage ? (
+        <RailProfile onOpenProfile={() => navigate("/profile")} />
+        <div style={{ flex: 1, display: "grid", alignContent: "center", width: "100%" }}>
+          <div style={{ display: "grid", gap: 28, width: "100%" }}>
+            <RailNavButton
+              label="Dashboard"
+              active={location.pathname === "/dashboard" || location.pathname === "/"}
+              onClick={() => navigate("/dashboard")}
+              icon={
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 20V11" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <path d="M10 20V7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <path d="M16 20V14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <path d="M22 20V4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                </svg>
+              }
+            />
+            <RailNavButton
+              label="Patients"
+              active={location.pathname === "/patient"}
+              onClick={() => navigate("/patient")}
+              icon={
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="2.1" />
+                  <path d="M6.5 19.2c0-3.2 2.6-5.2 5.5-5.2s5.5 2 5.5 5.2" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+                </svg>
+              }
+            />
+          </div>
+        </div>
+        <RailNavButton
+          label="Reload"
+          active={false}
+          onClick={() => void loadPatients()}
+          highlightOnHover
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.35-5.66" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+              <path d="M20 4v5h-5" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          }
+        />
+      </aside>
+      {onPatientPage && (
+        <PatientListPane
+          collapsed={patientPaneCollapsed}
+          setCollapsed={setPatientPaneCollapsed}
+          rows={patientList}
+          selectedId={selectedId}
+          onSelect={(id) => setSelectedId(id)}
+          loading={loading}
+          err={err}
+          query={listQuery}
+          setQuery={setListQuery}
+          onCreate={() => setCreateOpen(true)}
+          onRefresh={loadPatients}
+          onEdit={(p) => setEditTarget(p)}
+          onDelete={(p) => setDeleteTarget(p)}
+        />
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <header
+          style={{
+            height: 78,
+            borderBottom: "1px solid #e6ebf2",
+            background: "#fff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 22px",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontWeight: 900,
+                fontSize: onPatientPage ? 42 : 20,
+                color: onPatientPage ? PRIMARY : "#0f172a",
+                lineHeight: 1,
+              }}
+            >
+              {routeTitle}
+            </div>
+          </div>
+          <div style={{ minWidth: 40, display: "flex", justifyContent: "flex-end" }}>
+            {onPatientPage && selected ? (
               <button
                 type="button"
-                onClick={() => navigate("/dashboard")}
-                title="Back to Dashboard"
-                aria-label="Back to Dashboard"
+                onClick={() => setEditTarget(selected)}
+                title="Edit selected patient"
+                aria-label="Edit selected patient"
                 style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: 12,
-                  border: "1px solid rgba(15, 23, 42, 0.10)",
-                  background: "#fff",
+                  width: 44,
+                  height: 44,
+                  border: "none",
+                  background: "transparent",
+                  color: PRIMARY,
                   display: "grid",
                   placeItems: "center",
                   cursor: "pointer",
                 }}
               >
-                <span style={{ color: PRIMARY, lineHeight: 0 }}>
-                  <IconArrowLeft />
-                </span>
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M4 20h4l10-10a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M12.5 7.5 16.5 11.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
               </button>
             ) : null}
-
-            <div>
-              <div className="brandTitle" style={{ fontWeight: 900 }}>
-                {onManage ? "Manage Patients" : selected ? selected.secret_id : "To begin please select a patient"}
-              </div>
-              <div className="brandSubtitle">
-                {onManage
-                  ? "Add, edit, or remove patients"
-                  : selected
-                    ? `Dispensed: ${new Date(selected.brace_dispensed_at).toLocaleDateString()} • Last sync: ${agoLabel(
-                      selected.last_sync_at
-                    )}`
-                    : "Select a patient from the left"}
-              </div>
-            </div>
-          </div>
-
-          <div className="topbarRight">
-            <ProfileMenu />
           </div>
         </header>
-
-        <main className="content" style={{ position: "relative" }}>
+        <main style={{ padding: 20 }}>
           <Routes>
-            <Route
-              path="/"
-              element={
-                <DashboardDetail
-                  selected={selected}
-                  chartRange={chartRange}
-                  setChartRange={setChartRange}
-                  onUpdateGoal={updateGoal}
-                />
-              }
-            />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route
               path="/dashboard"
               element={
+                <GlobalDashboard
+                  rows={rows}
+                  loading={loading}
+                  err={err}
+                  onSelectPatient={(id) => {
+                    setSelectedId(id);
+                    navigate("/patient");
+                  }}
+                />
+              }
+            />
+            <Route
+              path="/patient"
+              element={
                 <DashboardDetail
                   selected={selected}
                   chartRange={chartRange}
@@ -904,70 +650,143 @@ function AuthedShell() {
                 />
               }
             />
-            <Route path="/manage" element={<ManagePatientsPage rows={rows} reload={loadPatients} />} />
+            <Route path="/add" element={<Navigate to="/patient" replace />} />
+            <Route path="/profile" element={<EditProfilePage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
-
-          {showFab && <ManageFab onCreated={loadPatients} />}
         </main>
       </div>
+      {createOpen && (
+        <CreatePatientModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={async () => {
+            setCreateOpen(false);
+            await loadPatients();
+          }}
+        />
+      )}
+      {editTarget && (
+        <EditPatientModal
+          patient={editTarget}
+          onClose={() => setEditTarget(null)}
+          onDelete={() => {
+            setDeleteTarget(editTarget);
+            setEditTarget(null);
+          }}
+          onSaved={async () => {
+            setEditTarget(null);
+            await loadPatients();
+          }}
+        />
+      )}
+      {deleteTarget && (
+        <DeletePatientModal
+          patient={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={async () => {
+            setDeleteTarget(null);
+            await loadPatients();
+          }}
+        />
+      )}
     </div>
   );
 }
-
-/* ========================= Profile Menu ========================= */
-
-function ProfileMenu() {
+function RailProfile({ onOpenProfile }: { onOpenProfile: () => void }) {
   const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [email, setEmail] = useState("");
   const navigate = useNavigate();
-  const [email, setEmail] = useState<string>("");
-
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? ""));
   }, []);
-
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       const target = e.target as Node;
       if (!target) return;
-      if (btnRef.current?.contains(target)) return;
+      if (wrapRef.current?.contains(target)) return;
       if (menuRef.current?.contains(target)) return;
       setOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
-
   async function handleLogout() {
     setOpen(false);
     await supabase.auth.signOut();
     navigate("/login");
   }
-
-  const initials = (email?.[0] ?? "U").toUpperCase();
-
+  const name = (email.split("@")[0] || "Provider").replace(/\./g, " ");
+  const initials = (name[0] ?? "P").toUpperCase();
   return (
-    <div className="profileWrap">
+    <div ref={wrapRef} style={{ width: "100%", position: "relative" }}>
       <button
-        ref={btnRef}
-        className="profileButton"
-        onClick={() => setOpen((v) => !v)}
         type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%",
+          border: "none",
+          background: "transparent",
+          color: "#fff",
+          display: "grid",
+          placeItems: "center",
+          gap: 10,
+          cursor: "pointer",
+          padding: 6,
+        }}
       >
-        <div className="profileMeta">
-          <div className="profileName">{email || "Provider"}</div>
-          <div className="profileRole">Provider</div>
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.15)",
+            border: "1px solid rgba(255,255,255,0.35)",
+            display: "grid",
+            placeItems: "center",
+            fontWeight: 900,
+          }}
+        >
+          {initials}
         </div>
-        <div className="profileCircle">{initials}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, textAlign: "center", lineHeight: 1.2, maxWidth: 78, wordBreak: "break-word" }}>
+          {name || "Provider"}
+        </div>
       </button>
-
       {open && (
-        <div ref={menuRef} className="profileMenu" role="menu">
-          <button className="menuItem danger" type="button" onClick={handleLogout}>
+        <div
+          ref={menuRef}
+          style={{
+            position: "absolute",
+            left: "calc(100% + 12px)",
+            top: 0,
+            minWidth: 170,
+            background: "#fff",
+            borderRadius: 12,
+            border: "1px solid #dbe3ee",
+            boxShadow: "0 18px 34px rgba(15,23,42,0.16)",
+            padding: 8,
+            zIndex: 50,
+          }}
+        >
+          <button
+            className="chip"
+            type="button"
+            style={{ width: "100%", justifyContent: "flex-start" }}
+            onClick={() => {
+              setOpen(false);
+              onOpenProfile();
+            }}
+          >
+            Edit profile
+          </button>
+          <button
+            className="chip"
+            type="button"
+            style={{ width: "100%", justifyContent: "flex-start", marginTop: 6, color: "#E5533D", borderColor: "rgba(229,83,61,0.35)" }}
+            onClick={handleLogout}
+          >
             Logout
           </button>
         </div>
@@ -975,7 +794,455 @@ function ProfileMenu() {
     </div>
   );
 }
+function RailNavButton({
+  label,
+  active,
+  onClick,
+  icon,
+  highlightOnHover = false,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  highlightOnHover?: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const bright = active || (highlightOnHover && (hovered || pressed));
 
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setPressed(false);
+      }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      style={{
+        width: "100%",
+        height: 54,
+        borderRadius: 14,
+        border: "none",
+        background: "transparent",
+        color: bright ? "#ffffff" : "rgba(255,255,255,0.58)",
+        display: "grid",
+        placeItems: "center",
+        cursor: "pointer",
+        position: "relative",
+      }}
+    >
+      {active && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 6,
+            height: 42,
+            borderRadius: 0,
+            background: "#1F3A5F",
+          }}
+        />
+      )}
+      <span style={{ display: "grid", placeItems: "center", transform: "scale(2)" }}>{icon}</span>
+    </button>
+  );
+}
+function PatientListPane({
+  collapsed,
+  setCollapsed,
+  rows,
+  selectedId,
+  onSelect,
+  loading,
+  err,
+  query,
+  setQuery,
+  onCreate,
+  onRefresh,
+  onEdit,
+  onDelete,
+}: {
+  collapsed: boolean;
+  setCollapsed: (v: boolean) => void;
+  rows: PatientRow[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  loading: boolean;
+  err: string | null;
+  query: string;
+  setQuery: (v: string) => void;
+  onCreate: () => void;
+  onRefresh: () => Promise<void>;
+  onEdit: (p: PatientRow) => void;
+  onDelete: (p: PatientRow) => void;
+}) {
+  const grouped = useMemo(() => {
+    const m = new Map<string, PatientRow[]>();
+    for (const p of rows) {
+      const k = (p.secret_id[0] || "#").toUpperCase();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(p);
+    }
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [rows]);
+
+  const letterIndex = useMemo(() => "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), []);
+  const availableLetters = useMemo(() => new Set(grouped.map(([letter]) => letter)), [grouped]);
+  const [showCollapseTip, setShowCollapseTip] = useState(false);
+  const collapseTipTimer = useRef<number | null>(null);
+
+  function onCollapseHoverStart() {
+    if (collapseTipTimer.current) window.clearTimeout(collapseTipTimer.current);
+    collapseTipTimer.current = window.setTimeout(() => setShowCollapseTip(true), 200);
+  }
+
+  function onCollapseHoverEnd() {
+    if (collapseTipTimer.current) {
+      window.clearTimeout(collapseTipTimer.current);
+      collapseTipTimer.current = null;
+    }
+    setShowCollapseTip(false);
+  }
+  return (
+    <aside
+      style={{
+        width: collapsed ? 32 : 320,
+        transition: "width 0.18s ease",
+        borderRight: "1px solid #e7ecf4",
+        background: "#fff",
+        height: "100vh",
+        position: "sticky",
+        top: 0,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div style={{ padding: 12, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative" }}>
+        {!collapsed && <div style={{ fontWeight: 900, fontSize: 27, color: "#0f172a", lineHeight: 1 }}>Patients</div>}
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={onCreate}
+            aria-label="Add patient"
+            title="Add patient"
+            style={{
+              width: 32,
+              height: 32,
+              border: "none",
+              background: "transparent",
+              color: PRIMARY,
+              display: "grid",
+              placeItems: "center",
+              cursor: "pointer",
+              fontSize: 28,
+              lineHeight: 1,
+              fontWeight: 700,
+              padding: 0,
+            }}
+          >
+            +
+          </button>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        aria-label={collapsed ? "Expand patient list" : "Collapse patient list"}
+        onMouseEnter={onCollapseHoverStart}
+        onMouseLeave={onCollapseHoverEnd}
+        onBlur={onCollapseHoverEnd}
+        style={{
+          position: "absolute",
+          right: -28,
+          top: "50%",
+          transform: "translateY(-50%)",
+          width: 28,
+          height: 72,
+          padding: 0,
+          display: "grid",
+          placeItems: "center",
+          border: "1px solid #d9e1ee",
+          borderLeft: "none",
+          borderRadius: "0 10px 10px 0",
+          background: "#fff",
+          color: "#64748b",
+          cursor: "pointer",
+          boxShadow: "8px 0 20px rgba(15, 23, 42, 0.08)",
+          zIndex: 35,
+        }}
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          {collapsed ? (
+            <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+          ) : (
+            <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+          )}
+        </svg>
+      </button>
+      {showCollapseTip && (
+        <div
+          style={{
+            position: "absolute",
+            right: -88,
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "#0f172a",
+            color: "#fff",
+            fontSize: 11,
+            padding: "4px 8px",
+            borderRadius: 6,
+            whiteSpace: "nowrap",
+            zIndex: 36,
+          }}
+        >
+          {collapsed ? "Expand" : "Collapse"}
+        </div>
+      )}
+      {!collapsed && (
+        <>
+          <div style={{ padding: 12 }}>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 10, top: 10, color: "#9aa5b1", lineHeight: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+                  <path d="M20 20l-3.7-3.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </span>
+              <input
+                placeholder="Search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  border: "none",
+                  background: "#eef1f4",
+                  color: "#0f172a",
+                  borderRadius: 8,
+                  height: 34,
+                  padding: "0 12px 0 32px",
+                  outline: "none",
+                  fontSize: 13,
+                }}
+              />
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "hidden", padding: "0 10px 10px", display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+            <div style={{ overflowY: "auto", paddingRight: 4 }}>
+              {loading && <div style={{ color: "#64748b", padding: 10 }}>Loading...</div>}
+              {err && <div style={{ color: "#E5533D", padding: 10 }}>{err}</div>}
+              {!loading &&
+                !err &&
+                grouped.map(([letter, patients]) => (
+                  <div key={letter} id={`letter-${letter}`} style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 900, padding: "2px 8px" }}>{letter}</div>
+                    {patients.map((p) => (
+                      <div
+                        key={p.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onSelect(p.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") onSelect(p.id);
+                        }}
+                        style={{
+                          border: "none",
+                          borderRadius: 10,
+                          padding: "10px 10px",
+                          marginBottom: 6,
+                          cursor: "pointer",
+                          position: "relative",
+                          background: p.id === selectedId ? "#1F3A5F" : "#fff",
+                          color: p.id === selectedId ? "#fff" : "#0f172a",
+                        }}
+                      >
+                        {p.id === selectedId ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "nowrap" }}>
+                            <div
+                              style={{
+                                fontWeight: 800,
+                                fontSize: 19.2,
+                                lineHeight: 1.1,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {p.secret_id}
+                            </div>
+                            <div
+                              aria-hidden="true"
+                              style={{
+                                width: 1,
+                                alignSelf: "stretch",
+                                minHeight: 16,
+                                background: "rgba(255,255,255,0.55)",
+                              }}
+                            />
+                            <div
+                              style={{
+                                fontSize: 12,
+                                opacity: 0.92,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {(() => {
+                                const months = Math.max(0, Math.floor(daysSince(p.brace_dispensed_at) / 30));
+                                return `Braced ${months} month${months === 1 ? "" : "s"} ago`;
+                              })()}
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ fontWeight: 800, fontSize: 16, lineHeight: 1.1 }}>{p.secret_id}</div>
+                            <div style={{ fontSize: 12, marginTop: 2, opacity: 0.64 }}>
+                              {(() => {
+                                const months = Math.max(0, Math.floor(daysSince(p.brace_dispensed_at) / 30));
+                                return `Braced ${months} month${months === 1 ? "" : "s"} ago`;
+                              })()}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </div>
+            <div style={{ width: 12, paddingTop: 2, color: "#64748b", fontSize: 11, fontWeight: 800, display: "grid", gap: 4, alignContent: "start" }}>
+              {letterIndex.map((letter) => {
+                const hasAny = availableLetters.has(letter);
+                return hasAny ? (
+                  <a
+                    key={letter}
+                    href={`#letter-${letter}`}
+                    style={{ color: "#475569", textDecoration: "none", textAlign: "center" }}
+                  >
+                    {letter}
+                  </a>
+                ) : (
+                  <span key={letter} style={{ color: "#c4cedb", textAlign: "center", userSelect: "none" }}>
+                    {letter}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
+function GlobalDashboard({
+  rows,
+  loading,
+  err,
+  onSelectPatient,
+}: {
+  rows: PatientRow[];
+  loading: boolean;
+  err: string | null;
+  onSelectPatient: (id: string) => void;
+}) {
+  const critical = rows.filter((p) => statusFromPatient(p) === "Critical");
+  const warning = rows.filter((p) => statusFromPatient(p) === "Warning");
+  const normal = rows.filter((p) => statusFromPatient(p) === "Normal");
+  const topAttention = [...rows]
+    .sort((a, b) => {
+      const ra = statusFromPatient(a);
+      const rb = statusFromPatient(b);
+      const rank = (s: "Critical" | "Warning" | "Normal") => (s === "Critical" ? 0 : s === "Warning" ? 1 : 2);
+      return rank(ra) - rank(rb);
+    })
+    .slice(0, 6);
+  return (
+    <section style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+        <MiniMetricCard title="Total Patients" value={rows.length} sub="all" />
+        <MiniMetricCard title="Critical" value={critical.length} sub="needs review" />
+        <MiniMetricCard title="Warning" value={warning.length} sub="watch list" />
+        <MiniMetricCard title="Normal" value={normal.length} sub="stable" />
+      </div>
+      <div style={{ borderRadius: 16, border: "1px solid #e4eaf3", background: "#fff", padding: 14 }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Patients Needing Attention</div>
+        {loading && <div style={{ color: "#64748b" }}>Loading...</div>}
+        {err && <div style={{ color: "#E5533D" }}>{err}</div>}
+        {!loading && !err && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {topAttention.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => onSelectPatient(p.id)}
+                style={{
+                  border: "1px solid #e5ebf4",
+                  background: "#fff",
+                  borderRadius: 12,
+                  padding: 10,
+                  textAlign: "left",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 800 }}>{p.secret_id}</div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>Last sync: {agoLabel(p.last_sync_at)}</div>
+                </div>
+                <StatusDot status={statusFromPatient(p)} />
+              </button>
+            ))}
+            {topAttention.length === 0 && <div style={{ color: "#64748b" }}>No patients yet.</div>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+function EditProfilePage() {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      const em = data.user?.email ?? "";
+      setEmail(em);
+      setName((em.split("@")[0] || "Provider").replace(/\./g, " "));
+    });
+  }, []);
+  return (
+    <section style={{ maxWidth: 780, margin: "0 auto" }}>
+      <div style={{ background: "#fff", border: "1px solid #e5ebf4", borderRadius: 16, padding: 18, display: "grid", gap: 12 }}>
+        <div style={{ fontWeight: 900, fontSize: 18 }}>Provider Profile</div>
+        <div style={{ color: "#64748b", fontSize: 13 }}>Name and image can be adjusted here. Email is managed by Auth.</div>
+        <div>
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>Display Name</div>
+          <input className="searchInput" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>Email</div>
+          <input className="searchInput" value={email} disabled />
+        </div>
+        <button
+          type="button"
+          className="primaryBtn"
+          style={{ background: PRIMARY, width: "fit-content" }}
+          onClick={() => setMsg("Saved locally for now. We can wire backend profile persistence next.")}
+        >
+          Save Profile
+        </button>
+        {msg && <div style={{ color: "#2FA36B", fontSize: 13 }}>{msg}</div>}
+      </div>
+    </section>
+  );
+}
 /* ========================= Dashboard Detail ========================= */
 
 function DashboardDetail({
@@ -1020,14 +1287,15 @@ function DashboardDetail({
     );
   }
 
-  const goal = selected.compliance_goal ?? 16;
+  const selectedPatient = selected;
+  const goal = selectedPatient.compliance_goal ?? 16;
 
   async function saveGoal() {
     setGoalErr(null);
     setSavingGoal(true);
     try {
       const g = Math.max(1, Math.min(24, Number(goalDraft)));
-      await onUpdateGoal(selected.id, g);
+      await onUpdateGoal(selectedPatient.id, g);
       setEditingGoal(false);
     } catch (e: any) {
       setGoalErr(e?.message ?? "Failed to update goal.");
@@ -1047,12 +1315,12 @@ function DashboardDetail({
           alignItems: "stretch",
         }}
       >
-        <MiniMetricCard title="Today" value={formatHours(selected.today_hours)} sub="hrs" />
-        <MiniMetricCard title="Yesterday" value={formatHours(selected.yesterday_hours)} sub="hrs" />
-        <MiniMetricCard title="7d avg" value={formatHours(selected.avg7_hours)} sub="hrs" />
-        <MiniMetricCard title="Streak" value={selected.streak_days} sub="days" />
-        <MiniMetricCard title="Compliant" value={selected.days_fully_compliant} sub="days" />
-        <MiniMetricCard title="Total" value={formatHours(selected.total_hours_worn)} sub="hrs" />
+        <MiniMetricCard title="Today" value={formatHours(selectedPatient.today_hours)} sub="hrs" />
+        <MiniMetricCard title="Yesterday" value={formatHours(selectedPatient.yesterday_hours)} sub="hrs" />
+        <MiniMetricCard title="7d avg" value={formatHours(selectedPatient.avg7_hours)} sub="hrs" />
+        <MiniMetricCard title="Streak" value={selectedPatient.streak_days} sub="days" />
+        <MiniMetricCard title="Compliant" value={selectedPatient.days_fully_compliant} sub="days" />
+        <MiniMetricCard title="Total" value={formatHours(selectedPatient.total_hours_worn)} sub="hrs" />
 
         {/* Goal tile (stands out, red, keeps edit) */}
         <div
@@ -1181,12 +1449,12 @@ function DashboardDetail({
         </div>
 
         <div className="trendPlaceholder" style={{ height: 340 }}>
-          <WearChart patientId={selected.id} range={chartRange} goal={goal} />
+          <WearChart patientId={selectedPatient.id} range={chartRange} goal={goal} />
         </div>
       </div>
 
       {/* Photos */}
-      <PhotoPanel patientId={selected.id} />
+      <PhotoPanel patientId={selectedPatient.id} />
     </section>
   );
 }
@@ -1725,6 +1993,10 @@ function ManagePatientsPage({ rows, reload }: { rows: PatientRow[]; reload: () =
         <EditPatientModal
           patient={editTarget}
           onClose={() => setEditTarget(null)}
+          onDelete={() => {
+            setDeleteTarget(editTarget);
+            setEditTarget(null);
+          }}
           onSaved={async () => {
             setEditTarget(null);
             await reload();
@@ -1832,8 +2104,25 @@ function ModalShell({
       >
         <div style={{ padding: 16, borderBottom: "1px solid #e6ebf2", display: "flex", justifyContent: "space-between" }}>
           <div style={{ fontWeight: 900 }}>{title}</div>
-          <button type="button" onClick={onClose} className="chip" style={{ border: "1px solid rgba(15, 23, 42, 0.10)" }}>
-            Close
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              width: 36,
+              height: 36,
+              border: "none",
+              background: "transparent",
+              color: "#64748b",
+              cursor: "pointer",
+              display: "grid",
+              placeItems: "center",
+              padding: 0,
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
 
@@ -1925,23 +2214,34 @@ function CreatePatientModal({ onClose, onCreated }: { onClose: () => void; onCre
       <div style={{ display: "grid", gap: 12 }}>
         <div>
           <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700, marginBottom: 6 }}>Secret ID</div>
-          <input className="searchInput" value={secretId} onChange={(e) => setSecretId(e.target.value)} placeholder="PC-0001" />
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 430px) auto", gap: 10, alignItems: "center" }}>
+            <input className="searchInput" value={secretId} onChange={(e) => setSecretId(e.target.value)} placeholder="PC-0001" />
+            <button
+              type="button"
+              className="chip"
+              onClick={() => setSecretId(suggestSecretId())}
+              disabled={saving}
+              style={{ border: "1px solid rgba(210,45,45,0.25)", color: PRIMARY, background: "rgba(210,45,45,0.06)", whiteSpace: "nowrap" }}
+            >
+              Suggest ID
+            </button>
+          </div>
         </div>
 
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700, marginBottom: 6 }}>Password</div>
+          <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700, marginBottom: 6 }}>Password</div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 430px) auto", gap: 10, alignItems: "center" }}>
+            <input className="searchInput" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Panda3!" />
             <button
               type="button"
               className="chip"
               onClick={() => setPassword(suggestPassword())}
               disabled={saving}
-              style={{ border: "1px solid rgba(210,45,45,0.25)", color: PRIMARY, background: "rgba(210,45,45,0.06)" }}
+              style={{ border: "1px solid rgba(210,45,45,0.25)", color: PRIMARY, background: "rgba(210,45,45,0.06)", whiteSpace: "nowrap" }}
             >
               Suggest password
             </button>
           </div>
-          <input className="searchInput" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Panda3!" />
           <div style={{ marginTop: 6, fontSize: 12, color: "#64748b" }}>Click “Suggest password” again to generate a new one.</div>
         </div>
 
@@ -1963,7 +2263,17 @@ function CreatePatientModal({ onClose, onCreated }: { onClose: () => void; onCre
   );
 }
 
-function EditPatientModal({ patient, onClose, onSaved }: { patient: PatientRow; onClose: () => void; onSaved: () => Promise<void> }) {
+function EditPatientModal({
+  patient,
+  onClose,
+  onDelete,
+  onSaved,
+}: {
+  patient: PatientRow;
+  onClose: () => void;
+  onDelete: () => void;
+  onSaved: () => Promise<void>;
+}) {
   const [secretId, setSecretId] = useState(patient.secret_id);
   const [goal, setGoal] = useState<number>(patient.compliance_goal ?? 16);
   const [dispensedAt, setDispensedAt] = useState<string>(() => new Date(patient.brace_dispensed_at).toISOString().slice(0, 10));
@@ -2012,6 +2322,15 @@ function EditPatientModal({ patient, onClose, onSaved }: { patient: PatientRow; 
       onClose={onClose}
       footer={
         <>
+          <button
+            className="chip"
+            type="button"
+            onClick={onDelete}
+            disabled={saving}
+            style={{ border: "1px solid rgba(229,83,61,0.35)", color: "#E5533D", background: "rgba(229,83,61,0.06)" }}
+          >
+            Delete
+          </button>
           <button className="chip" type="button" onClick={onClose} disabled={saving}>
             Cancel
           </button>
@@ -2059,7 +2378,7 @@ function EditPatientModal({ patient, onClose, onSaved }: { patient: PatientRow; 
             </button>
           </div>
           <div style={{ marginTop: 6, fontSize: 12, color: "#64748b" }}>
-            Password changes require an Edge Function (update-patient). If you haven’t created it yet, leave this blank.
+            Still developing.
           </div>
         </div>
 
@@ -2170,3 +2489,4 @@ function Legend() {
     </div>
   );
 }
+

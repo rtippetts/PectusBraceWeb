@@ -1,8 +1,13 @@
+:root {
+  --font-title: "Manrope", "Segoe UI", sans-serif;
+  --font-body: "Source Sans 3", "Segoe UI", sans-serif;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   background: white;
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-body);
 }
 
 #root {
