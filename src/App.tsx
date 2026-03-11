@@ -30,15 +30,12 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
-  ReferenceLine,
 } from "recharts";
 
 /* ========================= Brand colors ========================= */
 const PRIMARY = "#d22d2d";
-const ACCENT = "#dc6969";
 
 /* ========================= Types ========================= */
-type StatusFilter = "All" | "Critical" | "Warning" | "Priority";
 type SortMode = "PRIORITY" | "ALPHABETICAL";
 type ChartRange = "1W" | "1M" | "6M" | "1Y" | "ALL";
 
@@ -59,24 +56,12 @@ type PatientRow = {
   compliance_goal?: number | null;
 };
 
-/* ========================= Icons (SVG) ========================= */
+type GoalHistoryRow = {
+  goal: number;
+  effective_at: string;
+};
 
-function IconChevron({ direction }: { direction: "left" | "right" }) {
-  const rotate = direction === "left" ? "rotate(180 12 12)" : undefined;
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <g transform={rotate}>
-        <path
-          d="M10 7l5 5-5 5"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  );
-}
+/* ========================= Icons (SVG) ========================= */
 
 function IconPlus() {
   return (
@@ -86,50 +71,6 @@ function IconPlus() {
         stroke="currentColor"
         strokeWidth="2.4"
         strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconUsers() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M16 19c0-2.2-2-4-4-4s-4 1.8-4 4"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M12 13a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 12 13Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M20 19c0-1.7-1-3.2-2.5-3.7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M17 6.9A3 3 0 0 1 18 13"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconArrowLeft() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M15 18 9 12l6-6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
       />
     </svg>
   );
@@ -201,8 +142,55 @@ function addHoursByDay(map: Map<string, number>, start: Date, end: Date) {
   }
 }
 
-function fillMissingDays(rangeStart: Date, rangeEnd: Date, hoursMap: Map<string, number>) {
-  const out: { date: string; hours: number }[] = [];
+function buildGoalMapByDay(
+  rangeStart: Date,
+  rangeEnd: Date,
+  goalHistory: GoalHistoryRow[],
+  fallbackGoal: number,
+  fallbackStartIso: string,
+) {
+  const normalized = [...goalHistory]
+    .map((row) => ({
+      goal: Number(row.goal),
+      effectiveAt: new Date(row.effective_at),
+    }))
+    .filter((row) => Number.isFinite(row.goal) && Number.isFinite(row.effectiveAt.getTime()))
+    .sort((a, b) => a.effectiveAt.getTime() - b.effectiveAt.getTime());
+
+  if (normalized.length === 0) {
+    normalized.push({
+      goal: fallbackGoal,
+      effectiveAt: new Date(fallbackStartIso),
+    });
+  }
+
+  const out = new Map<string, number>();
+  const d = new Date(rangeStart);
+  d.setHours(0, 0, 0, 0);
+  const end = new Date(rangeEnd);
+  end.setHours(0, 0, 0, 0);
+
+  let idx = 0;
+  let currentGoal = normalized[0]?.goal ?? fallbackGoal;
+
+  while (d <= end) {
+    const endOfDay = new Date(d);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    while (idx < normalized.length && normalized[idx].effectiveAt.getTime() <= endOfDay.getTime()) {
+      currentGoal = normalized[idx].goal;
+      idx += 1;
+    }
+
+    out.set(toISODate(d), currentGoal);
+    d.setDate(d.getDate() + 1);
+  }
+
+  return out;
+}
+
+function fillMissingDays(rangeStart: Date, rangeEnd: Date, hoursMap: Map<string, number>, goalMap: Map<string, number>) {
+  const out: { date: string; hours: number; goal: number }[] = [];
   const d = new Date(rangeStart);
   d.setHours(0, 0, 0, 0);
   const end = new Date(rangeEnd);
@@ -213,6 +201,7 @@ function fillMissingDays(rangeStart: Date, rangeEnd: Date, hoursMap: Map<string,
     out.push({
       date: key,
       hours: Math.round(((hoursMap.get(key) ?? 0) + Number.EPSILON) * 10) / 10,
+      goal: Math.round(((goalMap.get(key) ?? 16) + Number.EPSILON) * 10) / 10,
     });
     d.setDate(d.getDate() + 1);
   }
@@ -354,7 +343,7 @@ function AuthedShell() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [chartRange, setChartRange] = useState<ChartRange>("1M");
-  const onPatientPage = location.pathname === "/patient";
+  const onPatientScopedPage = location.pathname === "/patient" || location.pathname === "/photos" || location.pathname === "/scans";
   async function loadPatients() {
     setLoading(true);
     setErr(null);
@@ -466,6 +455,17 @@ function AuthedShell() {
     try {
       const { error } = await supabase.from("patients").update({ compliance_goal: goal }).eq("id", patientId);
       if (error) throw error;
+
+      const { error: historyError } = await supabase.from("patient_goal_history").insert({
+        patient_id: patientId,
+        goal,
+        effective_at: new Date().toISOString(),
+      });
+
+      if (historyError && !historyError.message.toLowerCase().includes("patient_goal_history")) {
+        throw historyError;
+      }
+
       await loadPatients();
     } catch (e: any) {
       await loadPatients();
@@ -482,13 +482,11 @@ function AuthedShell() {
     return [...base].sort((a, b) => a.secret_id.localeCompare(b.secret_id));
   }, [listQuery, rows]);
   const routeTitle =
-    location.pathname === "/dashboard" || location.pathname === "/"
-      ? "Dashboard"
-      : location.pathname === "/patient"
-        ? selected?.secret_id ?? "Select patient from list"
-        : location.pathname === "/profile"
-            ? "Edit Profile"
-            : "Dashboard";
+    onPatientScopedPage
+      ? selected?.secret_id ?? "Select patient from list"
+      : location.pathname === "/profile"
+        ? "Edit Profile"
+        : "Patient";
   return (
     <div style={{ minHeight: "100vh", background: "#f6f8fc", display: "flex" }}>
       <aside
@@ -512,9 +510,9 @@ function AuthedShell() {
         <div style={{ flex: 1, display: "grid", alignContent: "center", width: "100%" }}>
           <div style={{ display: "grid", gap: 28, width: "100%" }}>
             <RailNavButton
-              label="Dashboard"
-              active={location.pathname === "/dashboard" || location.pathname === "/"}
-              onClick={() => navigate("/dashboard")}
+              label="Patient"
+              active={location.pathname === "/patient" || location.pathname === "/"}
+              onClick={() => navigate("/patient")}
               icon={
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M4 20V11" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
@@ -525,13 +523,25 @@ function AuthedShell() {
               }
             />
             <RailNavButton
-              label="Patients"
-              active={location.pathname === "/patient"}
-              onClick={() => navigate("/patient")}
+              label="Photos"
+              active={location.pathname === "/photos"}
+              onClick={() => navigate("/photos")}
               icon={
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="2.1" />
-                  <path d="M6.5 19.2c0-3.2 2.6-5.2 5.5-5.2s5.5 2 5.5 5.2" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+                  <path d="M5 8.5h3l1.4-2h5.2l1.4 2H19a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6.5a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <circle cx="12" cy="13" r="3.25" stroke="currentColor" strokeWidth="2" />
+                  <circle cx="17.6" cy="10.4" r="0.9" fill="currentColor" />
+                </svg>
+              }
+            />
+            <RailNavButton
+              label="3D Scans"
+              active={location.pathname === "/scans"}
+              onClick={() => navigate("/scans")}
+              icon={
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M12 12 19 7M12 12 5 7M12 12v9" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
                 </svg>
               }
             />
@@ -550,7 +560,7 @@ function AuthedShell() {
           }
         />
       </aside>
-      {onPatientPage && (
+      {onPatientScopedPage && (
         <PatientListPane
           collapsed={patientPaneCollapsed}
           setCollapsed={setPatientPaneCollapsed}
@@ -562,9 +572,6 @@ function AuthedShell() {
           query={listQuery}
           setQuery={setListQuery}
           onCreate={() => setCreateOpen(true)}
-          onRefresh={loadPatients}
-          onEdit={(p) => setEditTarget(p)}
-          onDelete={(p) => setDeleteTarget(p)}
         />
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -583,8 +590,8 @@ function AuthedShell() {
             <div
               style={{
                 fontWeight: 900,
-                fontSize: onPatientPage ? 42 : 20,
-                color: onPatientPage ? PRIMARY : "#0f172a",
+                fontSize: onPatientScopedPage ? 42 : 20,
+                color: onPatientScopedPage ? PRIMARY : "#0f172a",
                 lineHeight: 1,
               }}
             >
@@ -592,7 +599,7 @@ function AuthedShell() {
             </div>
           </div>
           <div style={{ minWidth: 40, display: "flex", justifyContent: "flex-end" }}>
-            {onPatientPage && selected ? (
+            {onPatientScopedPage && selected ? (
               <button
                 type="button"
                 onClick={() => setEditTarget(selected)}
@@ -624,21 +631,7 @@ function AuthedShell() {
         </header>
         <main style={{ padding: 20 }}>
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route
-              path="/dashboard"
-              element={
-                <GlobalDashboard
-                  rows={rows}
-                  loading={loading}
-                  err={err}
-                  onSelectPatient={(id) => {
-                    setSelectedId(id);
-                    navigate("/patient");
-                  }}
-                />
-              }
-            />
+            <Route path="/" element={<Navigate to="/patient" replace />} />
             <Route
               path="/patient"
               element={
@@ -650,9 +643,11 @@ function AuthedShell() {
                 />
               }
             />
+            <Route path="/photos" element={<PatientPhotosPage selected={selected} />} />
+            <Route path="/scans" element={<PatientScansPage selected={selected} />} />
             <Route path="/add" element={<Navigate to="/patient" replace />} />
             <Route path="/profile" element={<EditProfilePage />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/patient" replace />} />
           </Routes>
         </main>
       </div>
@@ -867,9 +862,6 @@ function PatientListPane({
   query,
   setQuery,
   onCreate,
-  onRefresh,
-  onEdit,
-  onDelete,
 }: {
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
@@ -881,9 +873,6 @@ function PatientListPane({
   query: string;
   setQuery: (v: string) => void;
   onCreate: () => void;
-  onRefresh: () => Promise<void>;
-  onEdit: (p: PatientRow) => void;
-  onDelete: (p: PatientRow) => void;
 }) {
   const grouped = useMemo(() => {
     const m = new Map<string, PatientRow[]>();
@@ -1139,73 +1128,6 @@ function PatientListPane({
     </aside>
   );
 }
-function GlobalDashboard({
-  rows,
-  loading,
-  err,
-  onSelectPatient,
-}: {
-  rows: PatientRow[];
-  loading: boolean;
-  err: string | null;
-  onSelectPatient: (id: string) => void;
-}) {
-  const critical = rows.filter((p) => statusFromPatient(p) === "Critical");
-  const warning = rows.filter((p) => statusFromPatient(p) === "Warning");
-  const normal = rows.filter((p) => statusFromPatient(p) === "Normal");
-  const topAttention = [...rows]
-    .sort((a, b) => {
-      const ra = statusFromPatient(a);
-      const rb = statusFromPatient(b);
-      const rank = (s: "Critical" | "Warning" | "Normal") => (s === "Critical" ? 0 : s === "Warning" ? 1 : 2);
-      return rank(ra) - rank(rb);
-    })
-    .slice(0, 6);
-  return (
-    <section style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
-        <MiniMetricCard title="Total Patients" value={rows.length} sub="all" />
-        <MiniMetricCard title="Critical" value={critical.length} sub="needs review" />
-        <MiniMetricCard title="Warning" value={warning.length} sub="watch list" />
-        <MiniMetricCard title="Normal" value={normal.length} sub="stable" />
-      </div>
-      <div style={{ borderRadius: 16, border: "1px solid #e4eaf3", background: "#fff", padding: 14 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>Patients Needing Attention</div>
-        {loading && <div style={{ color: "#64748b" }}>Loading...</div>}
-        {err && <div style={{ color: "#E5533D" }}>{err}</div>}
-        {!loading && !err && (
-          <div style={{ display: "grid", gap: 8 }}>
-            {topAttention.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => onSelectPatient(p.id)}
-                style={{
-                  border: "1px solid #e5ebf4",
-                  background: "#fff",
-                  borderRadius: 12,
-                  padding: 10,
-                  textAlign: "left",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  cursor: "pointer",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 800 }}>{p.secret_id}</div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>Last sync: {agoLabel(p.last_sync_at)}</div>
-                </div>
-                <StatusDot status={statusFromPatient(p)} />
-              </button>
-            ))}
-            {topAttention.length === 0 && <div style={{ color: "#64748b" }}>No patients yet.</div>}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
 function EditProfilePage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -1245,6 +1167,24 @@ function EditProfilePage() {
 }
 /* ========================= Dashboard Detail ========================= */
 
+function PatientRequiredEmptyState() {
+  return (
+    <div
+      style={{
+        minHeight: "calc(100vh - 72px - 36px)",
+        display: "grid",
+        placeItems: "center",
+        color: "rgba(100,116,139,0.6)",
+        fontWeight: 800,
+        fontSize: 28,
+        textAlign: "center",
+      }}
+    >
+      To begin please select a patient
+    </div>
+  );
+}
+
 function DashboardDetail({
   selected,
   chartRange,
@@ -1269,23 +1209,7 @@ function DashboardDetail({
   }, [selected?.id]);
 
   // ✅ Empty state copy EXACTLY as requested
-  if (!selected) {
-    return (
-      <div
-        style={{
-          minHeight: "calc(100vh - 72px - 36px)",
-          display: "grid",
-          placeItems: "center",
-          color: "rgba(100,116,139,0.6)",
-          fontWeight: 800,
-          fontSize: 28,
-          textAlign: "center",
-        }}
-      >
-        To begin please select a patient
-      </div>
-    );
-  }
+  if (!selected) return <PatientRequiredEmptyState />;
 
   const selectedPatient = selected;
   const goal = selectedPatient.compliance_goal ?? 16;
@@ -1449,20 +1373,82 @@ function DashboardDetail({
         </div>
 
         <div className="trendPlaceholder" style={{ height: 340 }}>
-          <WearChart patientId={selectedPatient.id} range={chartRange} goal={goal} />
+          <WearChart
+            patientId={selectedPatient.id}
+            range={chartRange}
+            goal={goal}
+            braceDispensedAt={selectedPatient.brace_dispensed_at}
+          />
         </div>
       </div>
+    </section>
+  );
+}
 
-      {/* Photos */}
-      <PhotoPanel patientId={selectedPatient.id} />
+function PatientPhotosPage({ selected }: { selected: PatientRow | null }) {
+  if (!selected) return <PatientRequiredEmptyState />;
+
+  return (
+    <section style={{ maxWidth: 1200, margin: "0 auto" }}>
+      <PhotoPanel patientId={selected.id} />
+    </section>
+  );
+}
+
+function PatientScansPage({ selected }: { selected: PatientRow | null }) {
+  if (!selected) return <PatientRequiredEmptyState />;
+
+  return (
+    <section style={{ maxWidth: 1200, margin: "0 auto" }}>
+      <div
+        style={{
+          borderRadius: 18,
+          border: "1px solid rgba(15, 23, 42, 0.10)",
+          background: "#fff",
+          padding: 24,
+          minHeight: 320,
+          display: "grid",
+          alignContent: "start",
+          gap: 14,
+        }}
+      >
+        <div style={{ fontWeight: 900, fontSize: 24, color: "#0f172a" }}>3D Scans</div>
+        <div style={{ color: "#64748b", maxWidth: 620 }}>
+          This page is ready for patient-specific 3D scan uploads, previews, and scan history. The scan workflow itself still needs backend support.
+        </div>
+        <div
+          style={{
+            borderRadius: 16,
+            border: "1px dashed rgba(15, 23, 42, 0.18)",
+            background: "#f8fafc",
+            minHeight: 220,
+            display: "grid",
+            placeItems: "center",
+            color: "#94a3b8",
+            fontWeight: 700,
+          }}
+        >
+          No 3D scans yet
+        </div>
+      </div>
     </section>
   );
 }
 
 /* ========================= Chart Component ========================= */
 
-function WearChart({ patientId, range, goal }: { patientId: string; range: ChartRange; goal: number }) {
-  const [data, setData] = useState<{ date: string; hours: number }[]>([]);
+function WearChart({
+  patientId,
+  range,
+  goal,
+  braceDispensedAt,
+}: {
+  patientId: string;
+  range: ChartRange;
+  goal: number;
+  braceDispensedAt: string;
+}) {
+  const [data, setData] = useState<{ date: string; hours: number; goal: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1483,7 +1469,14 @@ function WearChart({ patientId, range, goal }: { patientId: string; range: Chart
 
       if (start) q = q.gte("start_time", start.toISOString());
 
-      const { data: rows, error } = await q;
+      const [{ data: rows, error }, goalHistoryRes] = await Promise.all([
+        q,
+        supabase
+          .from("patient_goal_history")
+          .select("goal, effective_at")
+          .eq("patient_id", patientId)
+          .order("effective_at", { ascending: true }),
+      ]);
 
       if (cancelled) return;
       setLoading(false);
@@ -1503,14 +1496,21 @@ function WearChart({ patientId, range, goal }: { patientId: string; range: Chart
       let rangeStart = start ?? now;
       if (!start && (rows ?? []).length > 0) rangeStart = new Date((rows as any)[0].start_time);
 
-      setData(fillMissingDays(rangeStart, now, hoursMap));
+      const goalHistory =
+        goalHistoryRes.error && goalHistoryRes.error.message.toLowerCase().includes("patient_goal_history")
+          ? []
+          : ((goalHistoryRes.data ?? []) as GoalHistoryRow[]);
+
+      const goalMap = buildGoalMapByDay(rangeStart, now, goalHistory, goal, braceDispensedAt);
+
+      setData(fillMissingDays(rangeStart, now, hoursMap, goalMap));
     }
 
     load();
     return () => {
       cancelled = true;
     };
-  }, [patientId, range]);
+  }, [braceDispensedAt, goal, patientId, range]);
 
   if (loading) return <div style={{ padding: 12, color: "var(--muted)" }}>Loading chart…</div>;
   if (err) return <div style={{ padding: 12, color: "#E5533D" }}>{err}</div>;
@@ -1523,7 +1523,7 @@ function WearChart({ patientId, range, goal }: { patientId: string; range: Chart
         <XAxis dataKey="date" tickFormatter={(v) => v.slice(5)} minTickGap={24} />
         <YAxis domain={[0, 24]} tickCount={7} label={{ value: "Hours", angle: -90, position: "insideLeft" }} />
         <Tooltip formatter={(value: any) => [`${value} hrs`, "Worn"]} labelFormatter={(label) => `Date: ${label}`} />
-        <ReferenceLine y={goal} stroke="#94a3b8" strokeDasharray="6 6" />
+        <Line type="stepAfter" dataKey="goal" stroke="#94a3b8" strokeWidth={2} strokeDasharray="6 6" dot={false} />
         <Line type="monotone" dataKey="hours" stroke={PRIMARY} strokeWidth={2} dot={false} />
       </LineChart>
     </ResponsiveContainer>
@@ -2186,7 +2186,18 @@ function CreatePatientModal({ onClose, onCreated }: { onClose: () => void; onCre
         }
         throw new Error(detail || error.message || "Failed to create patient.");
       }
-      void data;
+      const patientId = (data as any)?.patient?.id as string | undefined;
+      if (patientId) {
+        const { error: historyError } = await supabase.from("patient_goal_history").insert({
+          patient_id: patientId,
+          goal,
+          effective_at: new Date(dispensedAt).toISOString(),
+        });
+
+        if (historyError && !historyError.message.toLowerCase().includes("patient_goal_history")) {
+          throw new Error(historyError.message);
+        }
+      }
 
       await onCreated();
     } catch (e: any) {
@@ -2429,7 +2440,7 @@ function DeletePatientModal({ patient, onClose, onDeleted }: { patient: PatientR
     >
       <div style={{ display: "grid", gap: 10 }}>
         <div style={{ color: "#0f172a" }}>
-          This will remove the patient from your dashboard and may delete wear history depending on your backend delete rules.
+          This will remove the patient from your workspace and may delete wear history depending on your backend delete rules.
         </div>
         {err && <div style={{ color: "#E5533D", fontSize: 13 }}>{err}</div>}
       </div>
@@ -2489,4 +2500,10 @@ function Legend() {
     </div>
   );
 }
+
+void agoLabel;
+void ManagePatientsPage;
+void ManageFab;
+void FilterPill;
+void Legend;
 
